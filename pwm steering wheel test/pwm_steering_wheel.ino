@@ -1,31 +1,30 @@
 //AS5048A 使用SPI通訊
-//平滑力回饋方向盤控制
-//無自檢系統，直接在代碼中調整角度
-//2025.3.18
-//雙馬達同步運作版本
+//具有開機自檢系統﹐自動回歸至0
+//2025.3.19
+//使用參數校正自檢偏差問題
+
 #include <AS5048A.h>
 
 // AS5048A 感測器設定
-AS5048A angleSensor(7, true);
+AS5048A angleSensor(7  , true);
 
 // L298N 馬達驅動器設定
-// 第一個馬達
+
 const int IN1 = 8;  // 方向控制腳1
 const int IN2 = 9;  // 方向控制腳2
-const int ENA = 10;  // PWM速度控制腳A
+const int ENA = 10;  // PWM速度控制腳
 
-// 第二個馬達
 const int IN3 = 11;  // 方向控制腳3
 const int IN4 = 12;  // 方向控制腳4
-const int ENB = 13;  // PWM速度控制腳B
+const int ENB = 13;  // PWM速度控制腳
 
 // 力回饋參數
 float centerAngle = 0.0;     // 中心位置設為0度
-float deadZone = 20;         // 中心死區(度)，避免中心點抖動
-int minPWM = 60;             // 最小有效PWM值
+float deadZone = 30;         // 中心死區(度)，避免中心點抖動35
+int minPWM = 20;             // 最小有效PWM值15
 float initialPosition = 0.0; // 儲存初始位置
-float forceGain = 0.9;       // 力回饋增益係數
-float maxAngle = 500;        // 最大角度範圍
+float forceGain = 0.7;       // 力回饋增益係數
+float maxAngle = 440.0;      // 最大角度範圍
 
 // 多轉追蹤變數
 int fullRotations = 0;        // 完整旋轉圈數
@@ -34,7 +33,16 @@ float lastAngle = 0.0;        // 上次讀取的角度
 // 平滑控制變數
 float currentForce = 0.0;     // 當前馬達力值
 float targetForce = 0.0;      // 目標馬達力值
-float smoothFactor = 0.1;     // 力值平滑係數（值越小，啟動越緩慢）
+float smoothFactor = 0.1;     // 力值平滑係數
+
+// 自檢系統參數
+float leftLimit = 0.0;        // 左側極限位置
+float rightLimit = 0.0;       // 右側極限位置
+float calculatedCenter = 0.0; // 計算出的中心位置
+const int CALIB_MOTOR_POWER = 70; // 校準時的馬達功率
+const int STALL_THRESHOLD = 2;    // 移動停止閾值（度）
+const int STALL_COUNT = 10;       // 確認停止的次數
+const float CENTER_CORRECTION = -15.0; // 中心點校正值（減去(向左)15度）
 
 void setup() {
   Serial.begin(115200);
@@ -42,53 +50,27 @@ void setup() {
   // 初始化感測器
   angleSensor.begin();
   
-  // 初始化第一個馬達控制針腳
+  // 初始化馬達控制針腳
   pinMode(ENA, OUTPUT);
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
   
-  // 初始化第二個馬達控制針腳
-  pinMode(ENB, OUTPUT);
-  pinMode(IN3, OUTPUT);
-  pinMode(IN4, OUTPUT);
-  
-  // 先停止所有馬達
+  // 先停止馬達
   analogWrite(ENA, 0);
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
   
-  analogWrite(ENB, 0);
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, LOW);
-  
-  Serial.println("平滑方向盤力回饋系統初始化 (雙馬達版)");
-  Serial.println("- 180度位置將自動調整為0度");
-  Serial.println("- 順時針為正，逆時針為負");
-  Serial.println("- 範圍支援+-500度");
+  Serial.println("方向盤力回饋系統初始化");
+  Serial.println("- 開始自檢和校準程序");
   
   // 等待感測器穩定
   delay(1000);
   
-  // 讀取當前角度
-  float rawAngle = angleSensor.getRotationInDegrees();
-  Serial.print("原始角度讀數: ");
-  Serial.print(rawAngle);
-  Serial.println("°");
+  // 執行自檢程序
+  //performSelfTest();
   
-  // 修正角度 - 將180度調整為0度
-  float adjustedAngle;
-  if (rawAngle >= 180) {
-    adjustedAngle = rawAngle - 180;
-  } else {
-    adjustedAngle = rawAngle + 180;
-  }
-  
-  Serial.print("調整後角度: ");
-  Serial.print(adjustedAngle);
-  Serial.println("°");
-  
-  // 初始化角度追蹤
-  lastAngle = adjustedAngle;
+  // 初始化上次角度
+  lastAngle = angleSensor.getRotationInDegrees();
   
   Serial.println("系統準備就緒");
   Serial.println("------------------------");
@@ -96,18 +78,10 @@ void setup() {
 
 void loop() {
   // 讀取當前角度
-  float rawAngle = angleSensor.getRotationInDegrees();
-  
-  // 修正角度 - 將180度調整為0度
-  float currentRawAngle;
-  if (rawAngle >= 180) {
-    currentRawAngle = rawAngle - 180;
-  } else {
-    currentRawAngle = rawAngle + 180;
-  }
+  float currentRawAngle = angleSensor.getRotationInDegrees();
   
   // 處理多圈旋轉（超過360度範圍）
-  // 檢測圈數變化 (使用修正後的角度)
+  // 檢測圈數變化
   if (lastAngle > 270 && currentRawAngle < 90) {
     // 順時針穿過零點
     fullRotations++;
@@ -116,13 +90,11 @@ void loop() {
     fullRotations--;
   }
   
-  // 儲存當前修正角度用於下次比較
-  lastAngle = currentRawAngle;
-  
   // 計算絕對角度（包含多圈）
   float currentAngle = currentRawAngle + (fullRotations * 360);
+  lastAngle = currentRawAngle;
   
-  // 限制在+-maxAngle度範圍
+  // 限制在+-440度範圍
   if (currentAngle > maxAngle) {
     currentAngle = maxAngle;
   } else if (currentAngle < -maxAngle) {
@@ -138,22 +110,20 @@ void loop() {
   // 平滑漸進到目標力值（軟啟動和軟停止）
   currentForce = currentForce * (1 - smoothFactor) + targetForce * smoothFactor;
   
-  // 應用平滑後的力回饋到兩個馬達
-  applyDualMotorForce((int)currentForce);
+  // 應用平滑後的力回饋
+  applyMotorForce((int)currentForce);
   
   // 顯示信息
   Serial.print("角度: ");
   Serial.print(currentAngle, 2);
   Serial.print(" | 偏差: ");
   Serial.print(angleDiff, 2);
-  Serial.print(" | 目標力: ");
-  Serial.print(targetForce);
-  Serial.print(" | 實際力: ");
+  Serial.print(" | 力回饋: ");
   Serial.println(currentForce);
   
   // 減少診斷信息的顯示頻率
   static int counter = 0;
-  if (counter++ % 100 == 0) {
+  if (counter++ % 20 == 0) {
     int agcValue = angleSensor.getGain();
     Serial.print("AGC值: ");
     Serial.println(agcValue);
@@ -174,6 +144,214 @@ void loop() {
   }
   
   delay(20);  // 更新頻率
+}
+
+// 執行自檢和自動校準
+void performSelfTest() {
+  Serial.println("開始自檢系統...");
+  
+  // 先讀取當前位置
+  float currentPosition = getFilteredAngle();
+  Serial.print("當前位置: ");
+  Serial.println(currentPosition);
+  
+  // 步驟1: 向左轉動直到碰到極限
+  Serial.println("1. 向左轉動至極限...");
+  leftLimit = findLeftLimit();
+  Serial.print("左極限位置: ");
+  Serial.println(leftLimit);
+  
+  // 短暫休息
+  delay(500);
+  
+  // 步驟2: 向右轉動直到碰到極限
+  Serial.println("2. 向右轉動至極限...");
+  rightLimit = findRightLimit();
+  Serial.print("右極限位置: ");
+  Serial.println(rightLimit);
+  
+  // 步驟3: 計算中心位置
+  calculatedCenter = ((leftLimit + rightLimit) / 2);
+  Serial.print("計算得到的中心位置: ");
+  Serial.println(calculatedCenter);
+  
+  // 步驟4: 移動到中心位置
+  Serial.println("3. 移動到中心位置...");
+  moveToCenter();
+ // calculatedCenter +=CENTER_CORRECTION;
+  // 步驟5: 設定零點位置
+  Serial.println("4. 設定中心點為零點...");
+  float currentRawAngle = angleSensor.getRotationInDegrees();
+  
+  // 設定零點位置，使當前位置讀數變為0度
+  float offset = 0.0 - currentRawAngle+CENTER_CORRECTION;
+  uint16_t currentZero = angleSensor.getZeroPosition();
+  int16_t zeroShift = (offset * 16384.0 / 360.0); // 轉換角度到感測器原始值
+  
+  // 設定新的零點
+  angleSensor.setZeroPosition(currentZero - zeroShift);
+  
+  // 驗證設定
+  delay(200);
+  float newAngle = angleSensor.getRotationInDegrees();
+  Serial.print("校準完成，當前角度: ");
+  Serial.println(newAngle);
+  
+  // 初始化跟踪變數
+  fullRotations = 0;
+  lastAngle = newAngle;
+  
+  // 顯示檢測到的方向盤範圍
+  float totalRange = abs(rightLimit - leftLimit);
+  Serial.print("方向盤總轉動範圍: ");
+  Serial.print(totalRange);
+  Serial.println(" 度");
+  
+  Serial.println("自檢和校準完成！");
+}
+
+// 尋找左側極限
+float findLeftLimit() {
+  float lastPosition = getFilteredAngle();
+  int stallCounter = 0;
+  
+  // 啟動向左轉動
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  analogWrite(ENA, CALIB_MOTOR_POWER);
+  
+  // 持續轉動直到檢測到停止
+  while (stallCounter < STALL_COUNT) {
+    delay(100);
+    float currentPosition = getFilteredAngle();
+    float movement = abs(currentPosition - lastPosition);
+    
+    Serial.print("左移: 位置=");
+    Serial.print(currentPosition);
+    Serial.print(", 移動量=");
+    Serial.println(movement);
+    
+    if (movement < STALL_THRESHOLD) {
+      stallCounter++;
+    } else {
+      stallCounter = 0;
+    }
+    
+    lastPosition = currentPosition;
+  }
+  
+  // 停止馬達
+  analogWrite(ENA, 0);
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  
+  // 返回檢測到的左極限位置
+  return getFilteredAngle();
+}
+
+// 尋找右側極限
+float findRightLimit() {
+  float lastPosition = getFilteredAngle();
+  int stallCounter = 0;
+  
+  // 啟動向右轉動
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  analogWrite(ENA, CALIB_MOTOR_POWER);
+  
+  // 持續轉動直到檢測到停止
+  while (stallCounter < STALL_COUNT) {
+    delay(100);
+    float currentPosition = getFilteredAngle();
+    float movement = abs(currentPosition - lastPosition);
+    
+    Serial.print("右移: 位置=");
+    Serial.print(currentPosition);
+    Serial.print(", 移動量=");
+    Serial.println(movement);
+    
+    if (movement < STALL_THRESHOLD) {
+      stallCounter++;
+    } else {
+      stallCounter = 0;
+    }
+    
+    lastPosition = currentPosition;
+  }
+  
+  // 停止馬達
+  analogWrite(ENA, 0);
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  
+  // 返回檢測到的右極限位置
+  return getFilteredAngle();
+}
+
+// 移動到中心位置
+void moveToCenter() {
+  float currentPosition = getFilteredAngle();
+  float targetPosition = calculatedCenter;
+  
+  Serial.print("從 ");
+  Serial.print(currentPosition);
+  Serial.print(" 移動到中心點 ");
+  Serial.println(targetPosition);
+  
+  // 判斷移動方向
+  bool moveRight = (targetPosition > currentPosition);
+  
+  // 設定方向
+  if (moveRight) {
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+  } else {
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+  }
+  
+  // 啟動馬達
+  analogWrite(ENA, CALIB_MOTOR_POWER);
+  
+  // 監控位置直到接近目標
+  while (abs(getFilteredAngle() - targetPosition) > 5.0) {
+    float currentPos = getFilteredAngle();
+    Serial.print("當前: ");
+    Serial.print(currentPos);
+    Serial.print(", 目標: ");
+    Serial.println(targetPosition);
+    
+    // 接近目標時降低速度
+    if (abs(currentPos - targetPosition) < 30) {
+      analogWrite(ENA, CALIB_MOTOR_POWER / 2);
+    }
+    
+    // 檢查是否已經過頭
+    if ((moveRight && currentPos > targetPosition) || 
+        (!moveRight && currentPos < targetPosition)) {
+      break;
+    }
+    
+    delay(100);
+  }
+  
+  // 停止馬達
+  analogWrite(ENA, 0);
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  
+  Serial.println("已到達中心位置");
+}
+
+// 獲取濾波後的角度
+float getFilteredAngle() {
+  // 讀取多次角度取平均值以減少噪聲
+  float sum = 0;
+  for (int i = 0; i < 5; i++) {
+    sum += angleSensor.getRotationInDegrees();
+    delay(10);
+  }
+  return sum / 5;
 }
 
 // 改進的指數曲線力回饋計算
@@ -210,42 +388,24 @@ int calculateForce(float angleDiff) {
   return (forceMagnitude >= 0) ? pwmValue : -pwmValue;
 }
 
-// 應用力回饋到兩個馬達，使它們一起運作
-void applyDualMotorForce(int force) {
+// 應用力回饋到馬達
+void applyMotorForce(int force) {
   if (abs(force) < 5) {
-    // 停止所有馬達
-    // 第一個馬達
+    // 停止馬達
     digitalWrite(IN1, LOW);
     digitalWrite(IN2, LOW);
     analogWrite(ENA, 0);
-    
-    // 第二個馬達
-    digitalWrite(IN3, LOW);
-    digitalWrite(IN4, LOW);
-    analogWrite(ENB, 0);
   } 
   else if (force > 0) {
     // 正方向轉動 - 將方向盤拉向中心點
-    // 第一個馬達
     digitalWrite(IN1, HIGH);
     digitalWrite(IN2, LOW);
     analogWrite(ENA, abs(force));
-    
-    // 第二個馬達
-    digitalWrite(IN3, HIGH);
-    digitalWrite(IN4, LOW);
-    analogWrite(ENB, abs(force));
   } 
   else {
     // 負方向轉動 - 將方向盤拉向中心點
-    // 第一個馬達
     digitalWrite(IN1, LOW);
     digitalWrite(IN2, HIGH);
     analogWrite(ENA, abs(force));
-    
-    // 第二個馬達
-    digitalWrite(IN3, LOW);
-    digitalWrite(IN4, HIGH);
-    analogWrite(ENB, abs(force));
   }
 }
