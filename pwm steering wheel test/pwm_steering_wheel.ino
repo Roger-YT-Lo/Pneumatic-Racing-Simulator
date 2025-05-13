@@ -2,26 +2,30 @@
 //具有開機自檢系統﹐自動回歸至0
 //2025.3.19
 //使用參數校正自檢偏差問題
+//加入按鈕手動校正
 
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
 #include <AS5048A.h>
 
 // AS5048A 感測器設定
-AS5048A angleSensor(7  , true);
+AS5048A angleSensor(7, true);
 
 // L298N 馬達驅動器設定
-
+// 第一個馬達
 const int IN1 = 8;  // 方向控制腳1
 const int IN2 = 9;  // 方向控制腳2
-const int ENA = 10;  // PWM速度控制腳
+const int ENA = 10;  // PWM速度控制腳A
 
+// 第二個馬達
 const int IN3 = 11;  // 方向控制腳3
 const int IN4 = 12;  // 方向控制腳4
-const int ENB = 13;  // PWM速度控制腳
+const int ENB = 13;  // PWM速度控制腳B
 
 // 力回饋參數
 float centerAngle = 0.0;     // 中心位置設為0度
 float deadZone = 30;         // 中心死區(度)，避免中心點抖動35
-int minPWM = 20;             // 最小有效PWM值15
+int minPWM = 15;             // 最小有效PWM值15
 float initialPosition = 0.0; // 儲存初始位置
 float forceGain = 0.7;       // 力回饋增益係數
 float maxAngle = 440.0;      // 最大角度範圍
@@ -44,6 +48,18 @@ const int STALL_THRESHOLD = 2;    // 移動停止閾值（度）
 const int STALL_COUNT = 10;       // 確認停止的次數
 const float CENTER_CORRECTION = -15.0; // 中心點校正值（減去(向左)15度）
 
+//手動校正參數
+const int BUTTON_PIN = 2;     // 按鈕接在D2引腳（可根據需要調整）
+bool buttonWasPressed = false; // 追蹤按鈕之前的狀態
+unsigned long buttonPressTime = 0; // 記錄按鈕按下的時間
+const int DEBOUNCE_DELAY = 50;    // 防抖延遲（毫秒）
+
+
+// LCD顯示器設定 - 加到全局變數區
+LiquidCrystal_I2C lcd(0x27, 16, 2); // 設置LCD地址為0x27，16列2行顯示器
+unsigned long lcdUpdateTime = 0;     // 上次更新LCD的時間
+const int LCD_UPDATE_INTERVAL = 50; // LCD更新間隔(毫秒)，避免過於頻繁刷新
+
 void setup() {
   Serial.begin(115200);
   
@@ -59,6 +75,21 @@ void setup() {
   analogWrite(ENA, 0);
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
+
+  //初始化手動校正按鈕
+  pinMode(BUTTON_PIN, INPUT_PULLUP); // 使用內部上拉電阻，記得加到setup中
+
+  // 初始化I2C LCD
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  
+  // 顯示初始化中訊息
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Initializing...");
+  lcd.setCursor(0, 1);
+  lcd.print("Please wait");
   
   Serial.println("方向盤力回饋系統初始化");
   Serial.println("- 開始自檢和校準程序");
@@ -70,17 +101,26 @@ void setup() {
   //performSelfTest();
   
   // 初始化上次角度
-  lastAngle = angleSensor.getRotationInDegrees();
+  //lastAngle = angleSensor.getRotationInDegrees();
   
   Serial.println("系統準備就緒");
   Serial.println("------------------------");
 }
 
 void loop() {
-  // 讀取當前角度
-  float currentRawAngle = angleSensor.getRotationInDegrees();
+
   
+  manualCalibration();
+ 
+  // 如果按鈕按下，跳過正常的力回饋計算
+  if (digitalRead(BUTTON_PIN) == LOW) {
+    delay(20);  // 短暫延遲
+    return;     // 跳過剩餘的loop
+  }
+  // 讀取當前角度
+  float currentRawAngle = angleSensor.getRotationInDegrees();  
   // 處理多圈旋轉（超過360度範圍）
+
   // 檢測圈數變化
   if (lastAngle > 270 && currentRawAngle < 90) {
     // 順時針穿過零點
@@ -93,7 +133,7 @@ void loop() {
   // 計算絕對角度（包含多圈）
   float currentAngle = currentRawAngle + (fullRotations * 360);
   lastAngle = currentRawAngle;
-  
+  updateLCD(currentAngle);
   // 限制在+-440度範圍
   if (currentAngle > maxAngle) {
     currentAngle = maxAngle;
@@ -146,6 +186,59 @@ void loop() {
   delay(20);  // 更新頻率
 }
 
+
+// 手動校正功能函式 - 在方向盤可自由轉動時設定中心點
+void manualCalibration() {
+  // 讀取按鈕狀態（使用INPUT_PULLUP，按下為LOW）
+  bool buttonIsPressed = (digitalRead(BUTTON_PIN) == LOW);
+  
+  // 按鈕狀態變化時防抖
+  if (buttonIsPressed != buttonWasPressed) {
+    if (millis() - buttonPressTime > DEBOUNCE_DELAY) {
+      buttonPressTime = millis(); // 更新時間戳
+      
+      // 處理按鈕狀態變化
+      if (buttonIsPressed) {
+        // 按鈕剛被按下
+        Serial.println("按鈕按下 - 進入自由轉動模式");
+        displayManualCalibrationMode(true);
+        // 停止馬達，不施加力回饋
+        digitalWrite(IN1, LOW);
+        digitalWrite(IN2, LOW);
+        analogWrite(ENA, 0);
+      } else {
+        // 按鈕剛被放開，進行校正
+        Serial.println("按鈕放開 - 設定當前位置為中心點");
+        displayManualCalibrationMode(false);
+        // 讀取當前位置
+        float currentPosition = getFilteredAngle();
+        Serial.print("當前位置: ");
+        Serial.println(currentPosition);
+        
+        // 設定零點位置，使當前位置讀數變為0度
+        float offset = 0.0 - currentPosition;
+        uint16_t currentZero = angleSensor.getZeroPosition();
+        int16_t zeroShift = (offset * 16384.0 / 360.0); // 轉換角度到感測器原始值
+        
+        // 設定新的零點
+        angleSensor.setZeroPosition(currentZero - zeroShift);
+        
+        // 重置圈數計數器和角度記錄
+        fullRotations = 0;
+        lastAngle = angleSensor.getRotationInDegrees();
+        
+        // 驗證設定
+        delay(100);
+        float newAngle = angleSensor.getRotationInDegrees();
+        Serial.print("校準完成，當前角度: ");
+        Serial.println(newAngle);
+      }
+      
+      // 更新按鈕狀態
+      buttonWasPressed = buttonIsPressed;
+    }
+  }
+}
 // 執行自檢和自動校準
 void performSelfTest() {
   Serial.println("開始自檢系統...");
@@ -208,6 +301,7 @@ void performSelfTest() {
   Serial.println(" 度");
   
   Serial.println("自檢和校準完成！");
+
 }
 
 // 尋找左側極限
@@ -407,5 +501,65 @@ void applyMotorForce(int force) {
     digitalWrite(IN1, LOW);
     digitalWrite(IN2, HIGH);
     analogWrite(ENA, abs(force));
+  }
+}
+
+
+
+
+// 更新LCD顯示 - 可以在loop()中調用
+void updateLCD(float currentAngle) {
+  // 限制更新頻率以避免LCD閃爍
+  unsigned long currentTime = millis();
+  if (currentTime - lcdUpdateTime < LCD_UPDATE_INTERVAL) {
+    return;
+  }
+  lcdUpdateTime = currentTime;
+  
+  // 更新LCD顯示
+  lcd.clear();
+  
+  // 第一行顯示角度
+  lcd.setCursor(0, 0);
+  lcd.print("Angle: ");
+  
+  // 格式化角度顯示（保留1位小數）
+  char angleBuffer[10];
+  dtostrf(currentAngle, 6, 1, angleBuffer);
+  lcd.print(angleBuffer);
+  lcd.print((char)223); // 顯示度數符號 °
+  
+  // 第二行顯示方向盤位置的圖形表示
+  lcd.setCursor(0, 1);
+  lcd.print("Position: ");
+  
+  // 顯示圖形指示器
+  int position = map(constrain(currentAngle, -90, 90), -90, 90, 0, 10);
+  lcd.setCursor(10, 1);
+  
+  for (int i = 0; i < 6; i++) {
+    if (i == position/2) {
+      lcd.print("|"); // 方向盤位置指示
+    } else {
+      lcd.print("-");
+    }
+  }
+}
+
+// 顯示手動校正模式
+void displayManualCalibrationMode(bool isActive) {
+  if (isActive) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Manual Calibrate");
+    lcd.setCursor(0, 1);
+    lcd.print("Release to set");
+  } else {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("New Center Set!");
+    lcd.setCursor(0, 1);
+    lcd.print("Angle: 0.0");
+    delay(1500); // 顯示確認訊息1.5秒
   }
 }
