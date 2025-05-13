@@ -1,13 +1,50 @@
 //AS5048A 使用SPI通訊
 //開機位置設為中心點(0度)，限制角度範圍在±180度內
 //具有兩段式馬達力回饋
+<<<<<<< HEAD:steering_wheel.ino
 //2025.3.30
 
+=======
+// 轉換為0~1供Unity使用，數值代表力度
+//2025.3.29
+>>>>>>> refactor--Integration-of-steering_wheel-and-throttle_brake:Input_control_v2.ino
 
 #include <AS5048A.h>
 
 // AS5048A 感測器設定
 AS5048A angleSensor(7, true);
+
+// 校準類比值範圍
+const int THROTTLE_MAX = 900;  // 油門放開時的值
+const int THROTTLE_MIN = 50;   // 油門踩到底時的值
+const int BRAKE_MAX = 700;     // 剎車放開時的值
+const int BRAKE_MIN = 50;     // 剎車踩到底時的值
+
+
+const int throttlePin = A0;     // 油門可變電阻接 A0
+const int brakePin = A1;        // 剎車可變電阻接 A1
+
+// 原始讀數參數
+int throttleValue = 0;          // 讀取的油門 ADC 數值 (0-1023)
+int brakeValue = 0;             // 讀取的剎車 ADC 數值 (0-1023)
+
+// 轉換後的值
+float throttleNormalized = 0.0; // 轉換後的油門值 (0到1)
+float brakeNormalized = 0.0;    // 轉換後的剎車值 (0到1)
+
+// 平滑處理參數
+const int SAMPLES = 5;          // 採樣數量
+int throttleSamples[SAMPLES];   // 油門採樣陣列
+int brakeSamples[SAMPLES];      // 煞車採樣陣列
+int sampleIndex = 0;            // 當前採樣索引
+float smoothFactor = 0.2;       // 平滑因子 (0-1)，較小的值 = 更平滑但反應更慢
+
+// 上一次的值 (用於平滑處理)
+float lastThrottleNormalized = 0.0;
+float lastBrakeNormalized = 0.0;
+
+// 死區設置 (防止小抖動)
+const float DEADZONE = 0.01;    // 死區閾值
 
 // L298N 馬達驅動器設定 - 不使用ENA/ENB (假設已接跳帽)
 const int IN1 = 8;   // 方向控制腳1
@@ -18,8 +55,8 @@ const int IN4 = 12;  // 方向控制腳4 (第二馬達)
 // 力回饋參數
 float centerAngle = 0.0;     // 中心位置設為0度
 float deadZone = 3;          // 中心死區(度)，在此範圍內不產生力回饋
-float forceZone1 = 25.0;     // 第一級力回饋區域 (使用單馬達)
-float forceZone2 = 60.0;     // 第二級力回饋區域 (使用雙馬達)
+float forceZone1 = 10.0;     // 第一級力回饋區域 (使用單馬達)
+float forceZone2 = 45.0;     // 第二級力回饋區域 (使用雙馬達)
 float maxAngle = 180.0;      // 最大顯示角度範圍（±180度）
 
 // 雙角度追蹤變數
@@ -32,12 +69,20 @@ bool overLimitNegative = false;  // 是否超過-180度限制
 // 力回饋控制變數
 bool forceFeedbackEnabled = true; // 控制是否啟用力回饋
 bool centeringMode = true;       // 啟用自動回中模式
+<<<<<<< HEAD:steering_wheel.ino
 
 // 通信控制變數
 unsigned long lastSendTime = 0;  // 上次發送數據的時間
 int sendInterval = 20;           // 發送間隔(毫秒)
 const char* anglePrefix = "SW:"; // 方向盤角度識別前綴
+=======
+>>>>>>> refactor--Integration-of-steering_wheel-and-throttle_brake:Input_control_v2.ino
 
+// 通信控制變數
+unsigned long lastSendTime = 0;  // 上次發送數據的時間
+int sendInterval = 20;           // 發送間隔(毫秒)
+const char* anglePrefix = "SW:"; // 方向盤角度識別前綴
+float reverseAngle;
 void setup() {
   Serial.begin(115200);
   
@@ -49,6 +94,15 @@ void setup() {
   pinMode(IN2, OUTPUT);
   pinMode(IN3, OUTPUT);
   pinMode(IN4, OUTPUT);
+  pinMode(throttlePin, INPUT);
+  pinMode(brakePin, INPUT);
+
+  // 初始化採樣陣列
+  for(int i = 0; i < SAMPLES; i++) {
+    throttleSamples[i] = analogRead(throttlePin);
+    brakeSamples[i] = analogRead(brakePin);
+    delay(5);
+  }
   
   // 先停止馬達
   stopMotors();
@@ -70,6 +124,30 @@ void setup() {
   
   // 確保馬達初始化為停止狀態
   stopMotors();
+<<<<<<< HEAD:steering_wheel.ino
+=======
+}
+
+// 計算平均值函數
+int getAverage(int samples[], int numSamples) {
+  long sum = 0;
+  for(int i = 0; i < numSamples; i++) {
+    sum += samples[i];
+  }
+  return sum / numSamples;
+}
+
+// 應用死區的函數
+float applyDeadzone(float value, float threshold) {
+  if(abs(value) < threshold) {
+    return 0.0;
+  } else {
+    // 平滑地從死區過渡
+    return value > 0 ? 
+           (value - threshold) / (1.0 - threshold) : 
+           (value + threshold) / (1.0 - threshold);
+  }
+>>>>>>> refactor--Integration-of-steering_wheel-and-throttle_brake:Input_control_v2.ino
 }
 
 // 明確停止所有馬達
@@ -80,6 +158,53 @@ void stopMotors() {
   digitalWrite(IN4, LOW);
 }
 
+//油門與剎車控制主程式
+void TH_and_BR() {
+  // 讀取油門和剎車值並存入採樣陣列
+  throttleSamples[sampleIndex] = analogRead(throttlePin);
+  brakeSamples[sampleIndex] = analogRead(brakePin);
+  
+  // 更新採樣索引
+  sampleIndex = (sampleIndex + 1) % SAMPLES;
+  
+  // 計算平均值
+  int avgThrottle = getAverage(throttleSamples, SAMPLES);
+  int avgBrake = getAverage(brakeSamples, SAMPLES);
+  
+  // 確保值在範圍內
+  avgThrottle = constrain(avgThrottle, THROTTLE_MIN, THROTTLE_MAX);
+  avgBrake = constrain(avgBrake, BRAKE_MIN, BRAKE_MAX);
+  
+  // 轉換為0到1的範圍（踩到底為1，放開為0）
+  float rawThrottle = map(avgThrottle, THROTTLE_MAX, THROTTLE_MIN, 0, 100) / 100.0;
+  float rawBrake = map(avgBrake, BRAKE_MAX, BRAKE_MIN, 0, 100) / 100.0;
+  
+  // 應用死區
+  rawThrottle = applyDeadzone(rawThrottle, DEADZONE);
+  rawBrake = applyDeadzone(rawBrake, DEADZONE);
+  
+  // 平滑處理 (低通濾波器)
+  throttleNormalized = lastThrottleNormalized + smoothFactor * (rawThrottle - lastThrottleNormalized);
+  brakeNormalized = lastBrakeNormalized + smoothFactor * (rawBrake - lastBrakeNormalized);
+  
+  // 更新上一次的值
+  lastThrottleNormalized = throttleNormalized;
+  lastBrakeNormalized = brakeNormalized;
+  
+  // 傳送格式化數據給Unity (保留兩位小數)
+  //T前綴
+  //Serial.print(",T:");
+  Serial.print(",");
+  Serial.print(throttleNormalized, 2);
+  //B前綴
+  //Serial.print(",B:");
+  Serial.print(",");
+  Serial.println(brakeNormalized, 2);
+  
+
+  delay(10); // 更短的延遲提高響應性
+}
+int i=1;
 void loop() {
   // 讀取當前角度
   float currentRawAngle = angleSensor.getRotationInDegrees();
@@ -166,6 +291,7 @@ void loop() {
   }
   
   // 定期發送角度數據
+<<<<<<< HEAD:steering_wheel.ino
   unsigned long currentTime = millis();
   if (currentTime - lastSendTime >= sendInterval) {
     // 發送帶有前綴的角度值
@@ -175,6 +301,21 @@ void loop() {
   }
   
   delay(5);  // 減少延遲以提高響應性
+=======
+  /*unsigned long currentTime = millis();
+  if (currentTime - lastSendTime >= sendInterval) {
+    // 發送帶有前綴的角度值
+    Serial.print(anglePrefix);
+    Serial.print(actualAngle, 2);  // 保留2位小數
+    lastSendTime = currentTime;
+  }*/
+    //sw前綴
+    //Serial.print(anglePrefix);
+    reverseAngle=actualAngle*-1;
+    Serial.print(reverseAngle, 2);  // 保留2位小數  
+  delay(5);  // 減少延遲以提高響應性
+  TH_and_BR();
+>>>>>>> refactor--Integration-of-steering_wheel-and-throttle_brake:Input_control_v2.ino
 }
 
 // 獲取濾波後的角度
