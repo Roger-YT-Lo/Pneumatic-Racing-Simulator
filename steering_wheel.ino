@@ -1,7 +1,8 @@
 //AS5048A 使用SPI通訊
 //開機位置設為中心點(0度)，限制角度範圍在±180度內
-//2025.3.29
-//雙角度追蹤版：分別記錄顯示角度和實際角度，解決超過±180度的回中問題
+//具有兩段式馬達力回饋
+//2025.3.30
+
 
 #include <AS5048A.h>
 
@@ -31,7 +32,11 @@ bool overLimitNegative = false;  // 是否超過-180度限制
 // 力回饋控制變數
 bool forceFeedbackEnabled = true; // 控制是否啟用力回饋
 bool centeringMode = true;       // 啟用自動回中模式
-bool debugMode = false;          // 調試模式
+
+// 通信控制變數
+unsigned long lastSendTime = 0;  // 上次發送數據的時間
+int sendInterval = 20;           // 發送間隔(毫秒)
+const char* anglePrefix = "SW:"; // 方向盤角度識別前綴
 
 void setup() {
   Serial.begin(115200);
@@ -47,8 +52,6 @@ void setup() {
   
   // 先停止馬達
   stopMotors();
-  
-  Serial.println("方向盤力回饋系統初始化 - 雙角度追蹤版");
   
   // 等待感測器穩定
   delay(1000);
@@ -67,11 +70,6 @@ void setup() {
   
   // 確保馬達初始化為停止狀態
   stopMotors();
-  
-  Serial.println("系統準備就緒 - 當前位置已設為中心點(0度)");
-  Serial.println("自動回中模式已啟用 - 方向盤會自動回到中心位置");
-  Serial.println("角度範圍顯示在 ±180度，但實際會追蹤實際角度用於校正");
-  Serial.println("------------------------");
 }
 
 // 明確停止所有馬達
@@ -162,99 +160,21 @@ void loop() {
     
     // 直接應用力回饋到馬達
     applyMotorForce(force);
-    
-    // 顯示力回饋信息
-    Serial.print(" | 力回饋: ");
-    Serial.print(force);
-    
-    // 顯示限位信息
-    if (overLimitPositive) {
-      Serial.print(" [右限位]");
-    } else if (overLimitNegative) {
-      Serial.print(" [左限位]");
-    }
   } else {
     // 如果力回饋被禁用，確保馬達停止
     stopMotors();
   }
   
-  // 顯示基本信息
-  Serial.print("角度: ");
-  Serial.print(displayAngle, 1);
-  Serial.print("° | ");
-  
-  // 調試模式下顯示實際角度
-  if (debugMode) {
-    Serial.print("實際角度: ");
-    Serial.print(actualAngle, 1);
-    Serial.print("° | ");
+  // 定期發送角度數據
+  unsigned long currentTime = millis();
+  if (currentTime - lastSendTime >= sendInterval) {
+    // 發送帶有前綴的角度值
+    //Serial.print(anglePrefix);
+    Serial.println(actualAngle, 2);  // 保留2位小數
+    lastSendTime = currentTime;
   }
   
-  // 添加方向指示
-  if (abs(displayAngle) <= deadZone) {
-    Serial.print("中心位置");
-  } else if (displayAngle > 0) {
-    Serial.print("右轉 ");
-    Serial.print(displayAngle, 1);
-    Serial.print("°");
-  } else {
-    Serial.print("左轉 ");
-    Serial.print(-displayAngle, 1);
-    Serial.print("°");
-  }
-  
-  Serial.println();
-  
-  // 檢查是否有按鍵輸入來切換功能
-  if (Serial.available() > 0) {
-    char cmd = Serial.read();
-    if (cmd == 'f') {
-      forceFeedbackEnabled = !forceFeedbackEnabled;
-      Serial.print("力回饋已");
-      Serial.println(forceFeedbackEnabled ? "啟用" : "禁用");
-      
-      // 如果禁用，確保馬達停止
-      if (!forceFeedbackEnabled) {
-        stopMotors();
-      }
-    }
-    else if (cmd == 'c') {
-      centeringMode = !centeringMode;
-      Serial.print("自動回中模式已");
-      Serial.println(centeringMode ? "啟用" : "禁用");
-    }
-    else if (cmd == 'r') {
-      // 重設零點 - 將當前位置設為中心點
-      resetCenter();
-    }
-    else if (cmd == 'd') {
-      // 切換調試模式
-      debugMode = !debugMode;
-      Serial.print("調試模式已");
-      Serial.println(debugMode ? "啟用" : "禁用");
-    }
-  }
-  
-  delay(10);  // 減少延遲以提高響應性
-}
-
-// 重設零點 - 將當前位置設為中心點
-void resetCenter() {
-  float currentRawAngle = getFilteredAngle();
-  uint16_t currentZero = angleSensor.getZeroPosition();
-  int16_t zeroShift = (currentRawAngle * 16384.0 / 360.0);
-  
-  // 設定新的零點
-  angleSensor.setZeroPosition(currentZero - zeroShift);
-  
-  // 重設角度和狀態
-  lastRawAngle = angleSensor.getRotationInDegrees();
-  displayAngle = 0.0;
-  actualAngle = 0.0;
-  overLimitPositive = false;
-  overLimitNegative = false;
-  
-  Serial.println("已重設零點 - 當前位置設為中心點(0度)");
+  delay(5);  // 減少延遲以提高響應性
 }
 
 // 獲取濾波後的角度
