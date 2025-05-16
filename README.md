@@ -1,6 +1,11 @@
 # Pneumatic Racing Simulator  
 # 氣壓賽車模擬器  
 
+## ⚠ 使用限制與版權聲明
+
+本專案僅供學術展示與個人學習使用，**未經授權禁止用於商業用途、公開展示或轉載修改。**  
+請勿將本專案內容或其衍生修改用於其他公開專案，違者將視為侵權行為追究。
+
 A non-typical motion-based racing game that combines Unity physics with real pneumatic feedback, tilting the player’s seat to replicate G-forces.  
 Made for **放視大賞 2025** | Created by **Roger YT.Lo**
 
