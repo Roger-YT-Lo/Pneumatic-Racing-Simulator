@@ -7,7 +7,7 @@
 請勿將本專案內容或其衍生修改用於其他公開專案，違者將視為侵權行為追究。
 
 A non-typical motion-based racing game that combines Unity physics with real pneumatic feedback, tilting the player’s seat to replicate G-forces.  
-Made for **放視大賞 2025** | Created by **Roger YT.Lo**
+Made for **VGW 2025** | Created by **Roger YT.Lo**
 
 這是一款非常規的動態賽車遊戲，結合 Unity 物理引擎與實體氣壓回饋，透過傾斜座椅模擬 G 力。  
 作品參賽於 **2025 放視大賞**｜作者：**羅元廷 （Roger YT.Lo）**
